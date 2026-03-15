@@ -1,55 +1,42 @@
 import axios from 'axios'
 
-const BASE_URL = import.meta.env.VITE_DIFY_BASE_URL || 'https://api.dify.ai/v1'
-
-const WORKFLOW_KEYS = {
-  product: import.meta.env.VITE_DIFY_KEY_PRODUCT,
-  content: import.meta.env.VITE_DIFY_KEY_CONTENT,
-  image: import.meta.env.VITE_DIFY_KEY_IMAGE,
-  diagnose: import.meta.env.VITE_DIFY_KEY_DIAGNOSE,
-  video: import.meta.env.VITE_DIFY_KEY_VIDEO,
-  review: import.meta.env.VITE_DIFY_KEY_REVIEW,
-}
+// 判断是否配置了真实 API Key（通过代理模式）
+// 前端不再持有任何 API Key，统一走 /api/proxy
+const USE_PROXY = import.meta.env.VITE_USE_PROXY === 'true'
 
 // 上传文件到 Dify，返回 file_id
 export async function uploadFile(workflowType, file) {
-  const apiKey = WORKFLOW_KEYS[workflowType]
-  if (!apiKey || apiKey.startsWith('your-')) return null
+  if (!USE_PROXY) return null
 
   const formData = new FormData()
   formData.append('file', file)
   formData.append('user', 'demo-user')
+  formData.append('workflowType', workflowType)
 
-  const response = await axios.post(`${BASE_URL}/files/upload`, formData, {
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'multipart/form-data',
-    },
+  const response = await axios.post('/api/upload', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
   })
   return response.data.id
 }
 
 // 通用工作流调用（非流式）
 async function runWorkflow(workflowType, inputs, userId = 'demo-user') {
-  const apiKey = WORKFLOW_KEYS[workflowType]
-  if (!apiKey || apiKey.startsWith('your-')) {
+  if (!USE_PROXY) {
     return getMockResponse(workflowType, inputs)
   }
 
   const response = await axios.post(
-    `${BASE_URL}/workflows/run`,
+    '/api/proxy',
     {
-      inputs,
-      response_mode: 'blocking',
-      user: userId,
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
+      workflowType,
+      path: '/workflows/run',
+      body: {
+        inputs,
+        response_mode: 'blocking',
+        user: userId,
       },
-      timeout: 300000, // 5分钟超时
-    }
+    },
+    { timeout: 300000 }
   )
 
   const data = response.data
@@ -75,7 +62,7 @@ async function runWorkflow(workflowType, inputs, userId = 'demo-user') {
 
 // ─── Agent 1：商品理解 ────────────────────────────────────────────
 export async function analyzeProduct(params) {
-  return runWorkflow('product', {
+  const data = await runWorkflow('product', {
     product_name: params.productName,
     product_category: params.category,
     product_features: params.features,
@@ -83,16 +70,19 @@ export async function analyzeProduct(params) {
     price_range: params.priceRange || '',
     usage_scenario: params.scenario || '',
   })
+  // Dify 代码节点将结果包在 result 键中，展开为平铺结构
+  return (data.result && typeof data.result === 'object') ? data.result : data
 }
 
 // ─── Agent 2：内容生成 ────────────────────────────────────────────
 export async function generateContent(params) {
-  return runWorkflow('content', {
+  const data = await runWorkflow('content', {
     product_analysis: JSON.stringify(params.productAnalysis),
     content_goal: params.contentGoal,
     content_type: params.contentType,
     style_preference: params.style || '自然真实',
   })
+  return (data.result && typeof data.result === 'object') ? data.result : data
 }
 
 // ─── Agent 3：图片优化 ────────────────────────────────────────────
@@ -125,12 +115,13 @@ export async function optimizeImage(params) {
 
 // ─── Agent 4：内容诊断 ────────────────────────────────────────────
 export async function diagnoseContent(params) {
-  return runWorkflow('diagnose', {
+  const data = await runWorkflow('diagnose', {
     content_text: params.contentText,
     platform: params.platform,
     product_name: params.productName,
     performance_data: params.performanceData || '',
   })
+  return (data.result && typeof data.result === 'object') ? data.result : data
 }
 
 // ─── Agent 5：视频候选 ────────────────────────────────────────────
@@ -141,29 +132,32 @@ export async function generateVideo(params) {
   } else {
     imageValue = { transfer_method: 'remote_url', url: params.imageUrl, type: 'image' }
   }
-  return runWorkflow('video', {
+  const data = await runWorkflow('video', {
     action_type: 'submit',
     image_url: imageValue,
     product_name: params.productName,
     video_style: params.style || '简洁展示',
   })
+  return (data.result && typeof data.result === 'object') ? data.result : data
 }
 
 export async function queryVideo(taskId) {
-  return runWorkflow('video', {
+  const data = await runWorkflow('video', {
     action_type: 'query',
     task_id: taskId,
   })
+  return (data.result && typeof data.result === 'object') ? data.result : data
 }
 
 // ─── Agent 6：复盘优化 ────────────────────────────────────────────
 export async function reviewOptimization(params) {
-  return runWorkflow('review', {
+  const data = await runWorkflow('review', {
     published_content: params.publishedContent,
     performance_data: params.performanceData,
     product_name: params.productName,
     diagnosis_history: params.diagnosisHistory || '',
   })
+  return (data.result && typeof data.result === 'object') ? data.result : data
 }
 
 // ─── Mock 数据（未配置 API Key 时返回） ──────────────────────────
