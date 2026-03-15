@@ -1,45 +1,86 @@
-import React, { useState, useRef } from 'react'
+import React, { useState, useRef, useEffect } from 'react'
 import PageHeader from '../components/PageHeader'
 import LoadingState from '../components/LoadingState'
-import { generateVideo } from '../services/difyApi'
+import { generateVideo, queryVideo, uploadFile } from '../services/difyApi'
 
 const VIDEO_STYLES = ['简洁展示', '场景展示', '强动感', '温馨生活']
 
+const STORAGE_KEY = 'aigc_video_result'
+
 export default function VideoGeneration() {
-  const [imageUrl, setImageUrl] = useState('')
+  const [inputMode, setInputMode] = useState('upload') // 'upload' | 'url'
+  const [imageFile, setImageFile] = useState(null)
   const [imagePreview, setImagePreview] = useState('')
+  const [imageUrl, setImageUrl] = useState('')
   const [productName, setProductName] = useState('')
   const [style, setStyle] = useState('简洁展示')
   const [loading, setLoading] = useState(false)
-  const [result, setResult] = useState(null)
+  const [result, setResult] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) } catch { return null }
+  })
   const [error, setError] = useState('')
+  const [polling, setPolling] = useState(false)
+  const pollRef = useRef(null)
   const fileRef = useRef()
+
+  // 有 task_id 但没有 video_url 时自动轮询
+  useEffect(() => {
+    if (result?.task_id && !result?.video_url) {
+      startPolling(result.task_id)
+    }
+    return () => clearInterval(pollRef.current)
+  }, [result?.task_id])
+
+  const startPolling = (taskId) => {
+    clearInterval(pollRef.current)
+    setPolling(true)
+    pollRef.current = setInterval(async () => {
+      try {
+        const data = await queryVideo(taskId)
+        if (data?.video_url) {
+          clearInterval(pollRef.current)
+          setPolling(false)
+          const updated = { ...result, ...data }
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(updated))
+          setResult(updated)
+        }
+      } catch {
+        // 轮询失败静默忽略，继续轮询
+      }
+    }, 15000) // 每 15 秒查一次
+  }
 
   const handleFileChange = (e) => {
     const file = e.target.files[0]
     if (!file) return
+    setImageFile(file)
     const reader = new FileReader()
-    reader.onload = ev => {
-      setImagePreview(ev.target.result)
-      setImageUrl('https://via.placeholder.com/400x400/cccccc/999999?text=已上传')
-    }
+    reader.onload = ev => setImagePreview(ev.target.result)
     reader.readAsDataURL(file)
   }
 
   const handleSubmit = async () => {
-    if (!imageUrl && !imagePreview) {
+    if (inputMode === 'upload' && !imageFile) {
       setError('请上传商品图片')
+      return
+    }
+    if (inputMode === 'url' && !imageUrl) {
+      setError('请填写图片 URL')
       return
     }
     setError('')
     setLoading(true)
     try {
-      const data = await generateVideo({
-        imageUrl: imageUrl || 'https://via.placeholder.com/400x400',
-        productName,
-        style,
-      })
-      setResult(data)
+      let params = { productName, style }
+      if (inputMode === 'upload') {
+        params.fileId = await uploadFile('video', imageFile)
+      } else {
+        params.imageUrl = imageUrl
+      }
+      const data = await generateVideo(params)
+      const saved = { ...data, _savedAt: Date.now(), _productName: productName, _style: style }
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(saved))
+      setResult(saved)
     } catch (e) {
       setError('提交失败：' + (e.message || ''))
     } finally {
@@ -65,22 +106,52 @@ export default function VideoGeneration() {
 
         {!result ? (
           <>
-            {/* Upload */}
+            {/* Image input */}
             <div className="card p-4">
-              <h2 className="text-sm font-semibold text-gray-700 mb-3">上传商品图片</h2>
-              <div onClick={() => fileRef.current?.click()}
-                className="border-2 border-dashed border-gray-200 rounded-xl p-6 flex flex-col items-center gap-3 cursor-pointer active:bg-gray-50">
-                {imagePreview ? (
-                  <img src={imagePreview} alt="preview" className="w-40 h-40 object-cover rounded-xl" />
-                ) : (
-                  <>
-                    <div className="w-14 h-14 bg-red-50 rounded-full flex items-center justify-center text-2xl">🎬</div>
-                    <p className="text-sm font-medium text-gray-700">点击上传商品图</p>
-                    <p className="text-xs text-gray-400">建议使用已优化的商品图，效果更佳</p>
-                  </>
-                )}
+              <div className="flex gap-2 mb-3">
+                <button onClick={() => setInputMode('upload')}
+                  className={`flex-1 text-xs py-1.5 rounded-lg border transition-all
+                    ${inputMode === 'upload' ? 'bg-red-500 text-white border-red-500' : 'bg-white text-gray-600 border-gray-200'}`}>
+                  本地上传
+                </button>
+                <button onClick={() => setInputMode('url')}
+                  className={`flex-1 text-xs py-1.5 rounded-lg border transition-all
+                    ${inputMode === 'url' ? 'bg-red-500 text-white border-red-500' : 'bg-white text-gray-600 border-gray-200'}`}>
+                  图片 URL
+                </button>
               </div>
-              <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleFileChange} />
+
+              {inputMode === 'upload' ? (
+                <>
+                  <div onClick={() => fileRef.current?.click()}
+                    className="border-2 border-dashed border-gray-200 rounded-xl p-6 flex flex-col items-center gap-3 cursor-pointer active:bg-gray-50">
+                    {imagePreview ? (
+                      <img src={imagePreview} alt="preview" className="w-40 h-40 object-cover rounded-xl" />
+                    ) : (
+                      <>
+                        <div className="w-14 h-14 bg-red-50 rounded-full flex items-center justify-center text-2xl">🎬</div>
+                        <p className="text-sm font-medium text-gray-700">点击上传商品图</p>
+                        <p className="text-xs text-gray-400">建议使用已优化的商品图，效果更佳</p>
+                      </>
+                    )}
+                  </div>
+                  <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleFileChange} />
+                  {imagePreview && (
+                    <button onClick={() => { setImagePreview(''); setImageFile(null) }}
+                      className="mt-2 w-full text-xs text-gray-400 py-2">重新上传</button>
+                  )}
+                </>
+              ) : (
+                <>
+                  <input className="input-field"
+                    placeholder="请输入商品图片的网络地址，例：https://example.com/product.jpg"
+                    value={imageUrl} onChange={e => setImageUrl(e.target.value)} />
+                  {imageUrl && (
+                    <img src={imageUrl} alt="preview" className="mt-3 w-full max-h-48 object-contain rounded-xl bg-gray-50"
+                      onError={e => { e.target.style.display = 'none' }} />
+                  )}
+                </>
+              )}
             </div>
 
             <div className="card p-4 space-y-4">
@@ -110,38 +181,57 @@ export default function VideoGeneration() {
               {loading ? '提交中...' : '🎬 提交视频生成任务'}
             </button>
 
-            {loading && <LoadingState message="提交视频生成任务中..." />}
+            {loading && <LoadingState message="AI 正在生成视频，请耐心等待..." estimatedSeconds={150} />}
           </>
         ) : (
           <div className="space-y-4 animate-slide-up">
-            {/* Task submitted */}
-            <div className="card p-6 text-center">
-              <div className="w-16 h-16 bg-orange-50 rounded-full flex items-center justify-center text-3xl mx-auto mb-4">
-                ⏳
+            {result._savedAt && (
+              <div className="bg-yellow-50 border border-yellow-100 rounded-xl px-4 py-2 flex items-center gap-2">
+                <span className="text-yellow-500 text-sm">📌</span>
+                <p className="text-xs text-yellow-700">
+                  提交于 {new Date(result._savedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                  {result._productName && ` · ${result._productName}`}
+                </p>
               </div>
-              <h3 className="font-semibold text-gray-900 mb-2">视频生成任务已提交</h3>
-              <p className="text-sm text-gray-500 mb-4">{result.message}</p>
-              <div className="bg-gray-50 rounded-xl p-3 text-left space-y-2">
-                <p className="text-xs text-gray-500">任务 ID：<span className="font-mono text-gray-700">{result.task_id}</span></p>
-                {result.preview_info && (
-                  <>
-                    <p className="text-xs text-gray-500">风格：<span className="text-gray-700">{result.preview_info.style}</span></p>
-                    <p className="text-xs text-gray-500">时长：<span className="text-gray-700">{result.preview_info.duration}</span></p>
-                    <p className="text-xs text-gray-500">格式：<span className="text-gray-700">{result.preview_info.format} · {result.preview_info.resolution}</span></p>
-                  </>
+            )}
+
+            {result.video_url ? (
+              <div className="card p-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="text-lg">🎬</span>
+                  <h3 className="font-semibold text-gray-900">视频已生成</h3>
+                </div>
+                <video src={result.video_url} controls className="w-full rounded-xl" />
+                <a href={result.video_url} download
+                  className="mt-3 btn-primary w-full text-center block">下载视频</a>
+              </div>
+            ) : (
+              <div className="card p-6 text-center">
+                <div className="relative w-16 h-16 mx-auto mb-4">
+                  <div className="absolute inset-0 rounded-full border-4 border-red-100" />
+                  <div className="absolute inset-0 rounded-full border-4 border-transparent border-t-red-400"
+                    style={{ animation: polling ? 'spin 1s linear infinite' : 'none' }} />
+                  <div className="absolute inset-0 flex items-center justify-center text-2xl">🎬</div>
+                </div>
+                <h3 className="font-semibold text-gray-900 mb-1">
+                  {polling ? '视频生成中...' : '等待视频生成'}
+                </h3>
+                <p className="text-xs text-gray-400 mb-4">
+                  {polling ? '每 15 秒自动检查一次，完成后自动展示' : '视频生成约需 2-5 分钟'}
+                </p>
+                {result._style && (
+                  <div className="bg-gray-50 rounded-xl px-4 py-2 inline-block">
+                    <span className="text-xs text-gray-500">风格：</span>
+                    <span className="text-xs font-medium text-gray-700">{result._style}</span>
+                  </div>
                 )}
               </div>
-            </div>
+            )}
 
-            {/* Polling hint */}
-            <div className="bg-blue-50 border border-blue-100 rounded-xl px-4 py-3">
-              <p className="text-xs text-blue-700 leading-relaxed">
-                💡 视频生成约需 2-3 分钟。实际产品中，前端会每隔 10 秒轮询任务状态，完成后自动展示视频。
-                当前为 Demo 演示模式。
-              </p>
-            </div>
-
-            <button onClick={() => setResult(null)} className="btn-secondary w-full">重新提交</button>
+            <button onClick={() => {
+              localStorage.removeItem(STORAGE_KEY)
+              setResult(null)
+            }} className="btn-secondary w-full">清除记录，重新提交</button>
           </div>
         )}
       </div>

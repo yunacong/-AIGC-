@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react'
 import PageHeader from '../components/PageHeader'
 import LoadingState from '../components/LoadingState'
-import { optimizeImage } from '../services/difyApi'
+import { optimizeImage, uploadFile } from '../services/difyApi'
 
 const STYLES = ['极简白底', '生活场景', '高质感', '活力促销']
 const PURPOSES = ['商品主图', '图文首图', '封面图', '详情图']
@@ -12,8 +12,10 @@ const PRIORITY_CONFIG = {
 }
 
 export default function ImageOptimization() {
-  const [imageUrl, setImageUrl] = useState('')
+  const [inputMode, setInputMode] = useState('upload') // 'upload' | 'url'
+  const [imageFile, setImageFile] = useState(null)
   const [imagePreview, setImagePreview] = useState('')
+  const [imageUrl, setImageUrl] = useState('')
   const [productName, setProductName] = useState('')
   const [style, setStyle] = useState('极简白底')
   const [purpose, setPurpose] = useState('商品主图')
@@ -26,33 +28,37 @@ export default function ImageOptimization() {
   const handleFileChange = (e) => {
     const file = e.target.files[0]
     if (!file) return
+    setImageFile(file)
     const reader = new FileReader()
-    reader.onload = (ev) => {
-      setImagePreview(ev.target.result)
-      // In a real app you'd upload to CDN and get URL
-      setImageUrl('https://via.placeholder.com/400x400/cccccc/999999?text=商品图已上传')
-    }
+    reader.onload = (ev) => setImagePreview(ev.target.result)
     reader.readAsDataURL(file)
   }
 
   const handleSubmit = async () => {
-    if (!imageUrl && !imagePreview) {
+    if (inputMode === 'upload' && !imageFile) {
       setError('请上传商品图片')
+      return
+    }
+    if (inputMode === 'url' && !imageUrl) {
+      setError('请填写图片 URL')
       return
     }
     setError('')
     setLoading(true)
     try {
-      const data = await optimizeImage({
-        imageUrl: imageUrl || 'https://via.placeholder.com/400x400',
-        productName,
-        style,
-        purpose,
-      })
-      setResult(data)
+      let params = { productName, style, purpose }
+      if (inputMode === 'upload') {
+        params.fileId = await uploadFile('image', imageFile)
+      } else {
+        params.imageUrl = imageUrl
+      }
+      const data = await optimizeImage(params)
+      console.log('图片优化返回数据:', data)
+      setResult(data || {})
       setSelectedImg(0)
     } catch (e) {
-      setError('优化失败：' + (e.message || ''))
+      console.error('图片优化错误:', e)
+      setError('优化失败：' + (e.response?.data?.message || e.message || ''))
     } finally {
       setLoading(false)
     }
@@ -65,35 +71,51 @@ export default function ImageOptimization() {
       <div className="px-4 py-4 space-y-4">
         {!result ? (
           <>
-            {/* Upload area */}
+            {/* Image input */}
             <div className="card p-4">
-              <h2 className="text-sm font-semibold text-gray-700 mb-3">上传商品图片</h2>
-              <div
-                onClick={() => fileRef.current?.click()}
-                className="border-2 border-dashed border-gray-200 rounded-xl p-6 flex flex-col items-center gap-3
-                           active:bg-gray-50 cursor-pointer transition-colors"
-              >
-                {imagePreview ? (
-                  <img src={imagePreview} alt="preview" className="w-40 h-40 object-cover rounded-xl" />
-                ) : (
-                  <>
-                    <div className="w-14 h-14 bg-orange-50 rounded-full flex items-center justify-center text-2xl">🖼️</div>
-                    <div className="text-center">
-                      <p className="text-sm font-medium text-gray-700">点击上传商品图</p>
-                      <p className="text-xs text-gray-400 mt-1">支持 JPG / PNG，建议 800×800 以上</p>
-                    </div>
-                  </>
-                )}
-              </div>
-              <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleFileChange} />
-
-              {imagePreview && (
-                <button
-                  onClick={() => { setImagePreview(''); setImageUrl('') }}
-                  className="mt-2 w-full text-xs text-gray-400 py-2"
-                >
-                  重新上传
+              <div className="flex gap-2 mb-3">
+                <button onClick={() => setInputMode('upload')}
+                  className={`flex-1 text-xs py-1.5 rounded-lg border transition-all
+                    ${inputMode === 'upload' ? 'bg-orange-500 text-white border-orange-500' : 'bg-white text-gray-600 border-gray-200'}`}>
+                  本地上传
                 </button>
+                <button onClick={() => setInputMode('url')}
+                  className={`flex-1 text-xs py-1.5 rounded-lg border transition-all
+                    ${inputMode === 'url' ? 'bg-orange-500 text-white border-orange-500' : 'bg-white text-gray-600 border-gray-200'}`}>
+                  图片 URL
+                </button>
+              </div>
+
+              {inputMode === 'upload' ? (
+                <>
+                  <div onClick={() => fileRef.current?.click()}
+                    className="border-2 border-dashed border-gray-200 rounded-xl p-6 flex flex-col items-center gap-3 cursor-pointer active:bg-gray-50">
+                    {imagePreview ? (
+                      <img src={imagePreview} alt="preview" className="w-40 h-40 object-cover rounded-xl" />
+                    ) : (
+                      <>
+                        <div className="w-14 h-14 bg-orange-50 rounded-full flex items-center justify-center text-2xl">🖼️</div>
+                        <p className="text-sm font-medium text-gray-700">点击上传商品图</p>
+                        <p className="text-xs text-gray-400">支持 JPG / PNG，建议 800×800 以上</p>
+                      </>
+                    )}
+                  </div>
+                  <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleFileChange} />
+                  {imagePreview && (
+                    <button onClick={() => { setImagePreview(''); setImageFile(null) }}
+                      className="mt-2 w-full text-xs text-gray-400 py-2">重新上传</button>
+                  )}
+                </>
+              ) : (
+                <>
+                  <input className="input-field"
+                    placeholder="请输入商品图片的网络地址，例：https://example.com/product.jpg"
+                    value={imageUrl} onChange={e => setImageUrl(e.target.value)} />
+                  {imageUrl && (
+                    <img src={imageUrl} alt="preview" className="mt-3 w-full max-h-48 object-contain rounded-xl bg-gray-50"
+                      onError={e => { e.target.style.display = 'none' }} />
+                  )}
+                </>
               )}
             </div>
 
@@ -137,8 +159,16 @@ export default function ImageOptimization() {
               {loading ? '分析中...' : '🖼️ 诊断并生成候选图'}
             </button>
 
-            {loading && <LoadingState message="AI 正在分析图片问题并生成候选图..." />}
+            {loading && <LoadingState message="AI 正在生成优化候选图..." estimatedSeconds={90} />}
           </>
+        ) : !result?.score && !result?.issues ? (
+          <div className="card p-6 text-center space-y-3">
+            <p className="text-sm text-gray-500">收到响应，但格式与预期不符</p>
+            <pre className="text-xs text-left bg-gray-50 rounded-lg p-3 overflow-auto max-h-48">
+              {JSON.stringify(result, null, 2)}
+            </pre>
+            <button onClick={() => setResult(null)} className="btn-secondary w-full">重试</button>
+          </div>
         ) : (
           <div className="space-y-4 animate-slide-up">
             {/* Diagnosis */}

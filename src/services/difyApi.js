@@ -11,6 +11,24 @@ const WORKFLOW_KEYS = {
   review: import.meta.env.VITE_DIFY_KEY_REVIEW,
 }
 
+// 上传文件到 Dify，返回 file_id
+export async function uploadFile(workflowType, file) {
+  const apiKey = WORKFLOW_KEYS[workflowType]
+  if (!apiKey || apiKey.startsWith('your-')) return null
+
+  const formData = new FormData()
+  formData.append('file', file)
+  formData.append('user', 'demo-user')
+
+  const response = await axios.post(`${BASE_URL}/files/upload`, formData, {
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'multipart/form-data',
+    },
+  })
+  return response.data.id
+}
+
 // 通用工作流调用（非流式）
 async function runWorkflow(workflowType, inputs, userId = 'demo-user') {
   const apiKey = WORKFLOW_KEYS[workflowType]
@@ -30,18 +48,29 @@ async function runWorkflow(workflowType, inputs, userId = 'demo-user') {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
+      timeout: 300000, // 5分钟超时
     }
   )
 
   const data = response.data
-  if (data.data?.outputs?.result) {
-    try {
-      return JSON.parse(data.data.outputs.result)
-    } catch {
-      return data.data.outputs.result
+  const status = data.data?.status
+  const outputs = data.data?.outputs || {}
+  console.log('[Dify status]', status, '[outputs]', outputs)
+
+  if (status === 'failed') {
+    throw new Error(data.data?.error || '工作流执行失败')
+  }
+
+  // 遍历所有输出字段，尝试解析 JSON 字符串
+  const parsed = {}
+  for (const [key, val] of Object.entries(outputs)) {
+    if (typeof val === 'string') {
+      try { parsed[key] = JSON.parse(val) } catch { parsed[key] = val }
+    } else {
+      parsed[key] = val
     }
   }
-  return data.data?.outputs || data
+  return parsed
 }
 
 // ─── Agent 1：商品理解 ────────────────────────────────────────────
@@ -68,12 +97,30 @@ export async function generateContent(params) {
 
 // ─── Agent 3：图片优化 ────────────────────────────────────────────
 export async function optimizeImage(params) {
-  return runWorkflow('image', {
-    image_url: params.imageUrl,
+  let imageValue
+  if (params.fileId) {
+    imageValue = { transfer_method: 'local_file', upload_file_id: params.fileId, type: 'image' }
+  } else {
+    imageValue = { transfer_method: 'remote_url', url: params.imageUrl, type: 'image' }
+  }
+  const raw = await runWorkflow('image', {
+    image_url: imageValue,
     product_name: params.productName,
     style_preference: params.style,
     image_purpose: params.purpose || '商品主图',
   })
+  // 将工作流实际输出 (score, issues, suggestions, image_url_1/2/3) 转换为前端格式
+  const issues = Array.isArray(raw.issues) ? raw.issues : (typeof raw.issues === 'string' ? JSON.parse(raw.issues) : [])
+  const suggestions = Array.isArray(raw.suggestions) ? raw.suggestions : (typeof raw.suggestions === 'string' ? JSON.parse(raw.suggestions) : [])
+  const candidateImages = [raw.image_url_1, raw.image_url_2, raw.image_url_3]
+    .filter(Boolean)
+    .map((url, i) => ({ url, style: ['极简白底', '生活场景', '高质感'][i] || `候选图${i + 1}`, description: '' }))
+  return {
+    score: parseInt(raw.score) || raw.score,
+    issues,
+    suggestions,
+    candidate_images: candidateImages,
+  }
 }
 
 // ─── Agent 4：内容诊断 ────────────────────────────────────────────
@@ -88,10 +135,24 @@ export async function diagnoseContent(params) {
 
 // ─── Agent 5：视频候选 ────────────────────────────────────────────
 export async function generateVideo(params) {
+  let imageValue
+  if (params.fileId) {
+    imageValue = { transfer_method: 'local_file', upload_file_id: params.fileId, type: 'image' }
+  } else {
+    imageValue = { transfer_method: 'remote_url', url: params.imageUrl, type: 'image' }
+  }
   return runWorkflow('video', {
-    image_url: params.imageUrl,
+    action_type: 'submit',
+    image_url: imageValue,
     product_name: params.productName,
     video_style: params.style || '简洁展示',
+  })
+}
+
+export async function queryVideo(taskId) {
+  return runWorkflow('video', {
+    action_type: 'query',
+    task_id: taskId,
   })
 }
 
