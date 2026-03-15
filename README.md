@@ -98,6 +98,7 @@ npm run build
 2. 在 [vercel.com](https://vercel.com) 导入项目
 3. 在 Settings → Environment Variables 填写所有 `VITE_DIFY_KEY_*`
 4. 部署完成后，手机访问即可添加到主屏幕使用
+5. https://aigc-demo-three.vercel.app
 
 ---
 
