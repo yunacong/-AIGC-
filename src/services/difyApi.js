@@ -2,7 +2,8 @@ import axios from 'axios'
 
 // 判断是否配置了真实 API Key（通过代理模式）
 // 前端不再持有任何 API Key，统一走 /api/proxy
-const USE_PROXY = import.meta.env.VITE_USE_PROXY === 'true'
+// 生产构建时 import.meta.env.PROD === true，始终走代理；开发时可用 VITE_USE_PROXY=true 开启
+const USE_PROXY = import.meta.env.PROD || import.meta.env.VITE_USE_PROXY === 'true'
 
 // 上传文件到 Dify，返回 file_id
 export async function uploadFile(workflowType, file) {
